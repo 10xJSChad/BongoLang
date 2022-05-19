@@ -1,0 +1,31 @@
+numeral i = 0
+numeral fizz = 0
+numeral buzz = 0
+string fizzstring = Fizz 
+string buzzstring = Buzz 
+string fizzbuzzstring = FizzBuzz 
+
+label loop
+    $i$ + 1
+    $fizz$ + 1
+    $buzz$ + 1
+
+    if $fizz$ == 3
+        if $buzz$ == 5
+            print $fizzbuzzstring$
+            $fizz$ = 0
+            $buzz$ = 0
+        end
+
+        print $fizzstring$
+        $fizz$ = 0
+    end 
+
+    if $buzz$ == 5
+        print $buzzstring$
+        $buzz$ = 0
+    end 
+    
+if $i$ < 500
+    goto loop
+end
