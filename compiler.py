@@ -1,23 +1,28 @@
 import re
 
-from numpy import true_divide
-
 f = open("main.drum", "r")
 code = f.readlines()
 
-asm = []
-data = ["\nfreg dd 0"]
+asm = [
+    "push ebp",
+    "mov ebp, esp",
+]
+
+asm_queue = []
+
+data = ["\nBASE_REG1 dd 0 \nBASE_REG2 dd 0 \nBASE_REG3 dd 0"]
 adopted_filename = ""
 functions = []
 function_stack = [None]
+arrays = []
 append_without_parsing = False
 macros = [
     "%macro write_string 2 ",
-        "mov   eax, 4",
-        "mov   ebx, 1",
-        "mov   ecx, %1",
-        "mov   edx, %2",
-        "int   80h",
+        "mov eax, 4",
+        "mov ebx, 1",
+        "mov ecx, %1",
+        "mov edx, %2",
+        "int 80h",
     "%endmacro",    
 ]
 
@@ -27,7 +32,6 @@ def get_function_index_from_name(function_name):
             return(i)
         
 def create_function_if_nonexistent(function_name):
-    #[None, []]
     exists = False
     for x in functions:
         if x[0] == function_name:
@@ -43,10 +47,48 @@ def asm_append(line, ignore_stack=False, stack_offset=0):
     elif func != None:
         functions[get_function_index_from_name(func)][1].append(line)
 
+#Also poorly named
+def parse_array_operation(line, array_name, close_index, append=False):
+    multiplier = 4
+    array = get_array_entry(array_name)
+    index = get_variable_name(line[close_index:], enclose=True)
+    start_index = array[2]
+    if append:
+        asm_append("mov edx, " + index)
+        asm_append("add edx, " + str(start_index))
+    return("[esp + " + str(multiplier) + " * edx]")
+    
+def get_array_entry(array_name):
+    for x in arrays:
+        if x[0] == array_name:
+            return x
 
-def get_variable_name(line, enclose=False, allownone=False):
+def is_variable_array(variable_name):
+    for x in arrays:
+        if x[0] == variable_name:
+            return True
+    return False
+
+#Poorly named, might fix one day.
+#Should probably make variable_name.group(1) a var for readability
+def get_variable_name(line, enclose=False, allownone=False, append_if_array_operation=False):
+    original_line = line
+    
+    i = 0
+    if line.count("$") > 2:
+        for j, x in enumerate(line):
+            if x == "$": i += 1
+            if i == 2: 
+                line = line[:-j-1].strip()
+                i = j + 2
+                break
+    else:
+        i = line.rfind("$") + 2
+            
     variable_name = re.search(r'.*?\$(.*)\$.*' , line)
-    if variable_name:
+    if variable_name: 
+        if is_variable_array(variable_name.group(1)):
+            return(parse_array_operation(original_line, variable_name.group(1), i, append=append_if_array_operation))
         if enclose:
             return("[" + variable_name.group(1) + "]")
         else:
@@ -57,6 +99,7 @@ def get_variable_name(line, enclose=False, allownone=False):
     return line
 
 def if_statement(line, index):
+    line = line.strip()
     instruction = None
     instructions = {
         "==": "je",
@@ -68,6 +111,7 @@ def if_statement(line, index):
     }
     
     args = re.split('>|<|==|>=|<=|!=|\n', line[3:])
+    
     function_name = adopted_filename + "_" + "if_" + str(index)
     for i, x in enumerate(args):
         args[i] = args[i].replace('=', '').strip()
@@ -76,7 +120,7 @@ def if_statement(line, index):
     
     for x in instructions:
         if x in line: instruction = instructions[x]
-        
+    
     asm_append("mov eax, " + str(args[1]))
     asm_append("cmp " + str(args[0]) + ", eax")
     asm_append(instruction + " " + function_name)
@@ -95,13 +139,12 @@ def variable_operation(line):
     operation = None
     operations = ["+", "-", "*", "/", "="]
     a = b = None
-    
     for x in operations:
         if x in line:
             operation = x
             line_split = line.split(operation)
-            a = get_variable_name(line_split[0], enclose=True).strip()
-            b = get_variable_name(line_split[1], enclose=True).strip()
+            a = get_variable_name(line_split[0], enclose=True, append_if_array_operation=True).strip()
+            b = get_variable_name(line_split[1], enclose=True, append_if_array_operation=True).strip()
             break
     
     asm_append("mov eax, " + b) 
@@ -120,15 +163,27 @@ def print_statement(line):
     asm_append("write_string " + variable_name + ", " + variable_name + "len")
 
 def goto_statement(line):
-    asm_append(line.replace("goto", "jmp").lstrip().rstrip())    
+    asm_append(line.replace("goto", "jmp").strip())    
     
 def call_statement(line):
-    line = line.split()
-    function_name = line[1].strip()
+    line_split = line.split()
+    function_name = line_split[1].replace(",", "").strip()
+    function_args = line.split(",")
+    
+    if len(function_args) > 1:
+        asm_append("mov eax, " + get_variable_name(function_args[1].replace(",", "").strip(), enclose=True))
+        asm_append("mov [BASE_REG1], eax")
+    if len(function_args) > 2:
+        asm_append("mov eax, " + get_variable_name(function_args[2].replace(",", "").strip(), enclose=True))
+        asm_append("mov [BASE_REG2], eax")
+    if len(function_args) > 3:
+        asm_append("mov eax, " + get_variable_name(function_args[3].replace(",", "").strip(), enclose=True))
+        asm_append("mov [BASE_REG3], eax")
+    
     if function_stack[0]:
         asm_append("jmp"+ " FUNC_" + function_name) 
     else:
-        asm_append(line[0] + " FUNC_" + function_name)   
+        asm_append(line_split[0] + " FUNC_" + function_name)   
 
 def adopt_declaration(line):
     global adopted_filename
@@ -152,6 +207,14 @@ def numeral_declaration(line):
 def label_declaration(line):
     asm_append(line.split()[1] + ":")
 
+def array_declaration(line):
+    array_name = line.split()[1].strip()
+    array_length = line.split("=")[1].strip()
+    if(arrays == []):
+        arrays.append((array_name, int(array_length), 1))
+    else:
+        arrays.append((array_name, int(array_length), (arrays[-1][1] + arrays[-1][2]) + 1))
+    
 def parse_lines(lines):
     global append_without_parsing
     for i, line in enumerate(lines):
@@ -160,6 +223,10 @@ def parse_lines(lines):
             keyword = line_split[0]
         else: keyword = "N/A"
         
+        if(asm_queue != []):
+            asm_append(asm_queue[0])
+            asm_queue.pop(0)
+            
         if not append_without_parsing:
             if keyword == "string":
                 string_declaration(line)         
@@ -181,6 +248,8 @@ def parse_lines(lines):
                 end_statement()
             if keyword == "adopt":
                 adopt_declaration(line)
+            if keyword == "array":
+                array_declaration(line)
             if keyword == "<asm":
                 append_without_parsing = True
             if get_variable_name(keyword, allownone=True):
@@ -226,4 +295,3 @@ def compile():
     return result
            
 print(compile())
-#compile()
